@@ -7,6 +7,21 @@
 </div>
 
 {% if session.get('user_id') %}
+{% set weekly_percent = ((weekly_progress / weekly_goal * 100) if weekly_goal else 0) | round | int %}
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title">Weekly Contribution Goal</h5>
+      <p>{{ weekly_progress }} / {{ weekly_goal }} contributions completed this week!</p>
+      <div class="progress">
+        <div class="progress-bar" role="progressbar" style="width: {{ [weekly_percent, 100] | min }}%;" aria-valuenow="{{ weekly_progress }}" aria-valuemin="0" aria-valuemax="{{ weekly_goal }}"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if session.get('user_id') %}
 <div class="col-md-8 mx-auto mb-4">
   <div class="card shadow-sm">
     <div class="card-body">
@@ -32,6 +47,7 @@
     <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
     <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    <a href="{{ url_for('feed', sort='needed', show=current_show) }}" class="btn {% if current_sort == 'needed' %}btn-primary{% else %}btn-light{% endif %}">Needs Response (0 Comments)</a>
   </div>
 
   <!-- This is the 'show' filter for All / Following -->

@@ -138,6 +138,20 @@ def feed():
         posts = query_db(query, final_params)
     elif sort == 'recommended':
         posts = recommend(current_user_id, show == 'following' and current_user_id)
+    elif sort == 'needed':
+        # Only posts that have no comments yet, newest first
+        no_comments = "NOT EXISTS (SELECT 1 FROM comments c WHERE c.post_id = p.id)"
+        needed_where = f"{where_clause} AND {no_comments}" if where_clause else f"WHERE {no_comments}"
+        query = f"""
+            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            {needed_where}
+            ORDER BY p.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        final_params = params + list(pagination_params)
+        posts = query_db(query, final_params)
     else:  # Default sort is 'new'
         query = f"""
             SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
