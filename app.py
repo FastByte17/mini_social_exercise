@@ -191,6 +191,24 @@ def feed():
             'comments': comments_moderated
         })
 
+    # Calculate Weekly Progress and Goal for the Current User
+    current_user_id = session.get('user_id')
+    weekly_progress = 0
+    weekly_goal = 0
+    
+    if current_user_id:
+        #Retrieve the user's weekly goal and progress from the database
+        user_row = query_db('SELECT weekly_goal, weekly_progress FROM users WHERE id = ?', (current_user_id,), one=True)
+        if user_row and user_row['weekly_goal']:
+            weekly_goal = user_row['weekly_goal']
+            weekly_progress = user_row['weekly_progress']
+
+        #Calculate the user's weekly progress based on their posts in the last 7 days
+        posts_count = query_db('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND created_at >= datetime("now", "-7 days")', (current_user_id,), one=True)['count']
+        comments_count = query_db('SELECT COUNT(*) as count FROM comments WHERE user_id = ? AND created_at >= datetime("now", "-7 days")', (current_user_id,), one=True)['count']
+        
+        weekly_progress = posts_count + comments_count
+        
     #  4. Render Template with Pagination Info 
     return render_template('feed.html.j2', 
                            posts=posts_data, 
@@ -199,8 +217,12 @@ def feed():
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
-
+                           reaction_types=REACTION_TYPES,
+                           weekly_progress=weekly_progress, # Pass the user's weekly progress
+                           weekly_goal=weekly_goal # Pass the user's weekly goal
+                           )
+    
+        
 @app.route('/posts/new', methods=['POST'])
 def add_post():
     """Handles creating a new post from the feed."""
