@@ -208,7 +208,7 @@ def feed():
     # Calculate Weekly Progress and Goal for the Current User
     current_user_id = session.get('user_id')
     weekly_progress = 0
-    weekly_goal = 0
+    weekly_goal = 5
     
     if current_user_id:
         #Retrieve the user's weekly goal and progress from the database
