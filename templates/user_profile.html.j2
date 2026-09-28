@@ -17,6 +17,15 @@
           </p>
           <p class="card-text">{{ user.profile or "No profile information provided." }}</p>
 
+          {% if shared_interests %}
+            <div class="my-3">
+              <strong>Shared Interests:</strong> You and {{ user.username }} both share:
+              {% for interest in shared_interests %}
+                <span class="badge bg-primary me-1">{{ interest }}</span>
+              {% endfor %}
+            </div>
+          {% endif %}
+
          {% if session.user_id and session.user_id != user.id %}
             <div class="my-3">
               {# The logic is now a simple boolean check #}
