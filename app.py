@@ -335,6 +335,19 @@ def user_profile(username):
         if follow_relation:
             is_currently_following = True
     # --
+    
+    #Retrieve user's interests
+    user_interests = [i.strip() for i in user.get('interests', '').split(',') if i.strip()]
+    
+    shared_interests = []
+    current_user_id = session.get('user_id')
+    
+    if current_user_id and current_user_id != user['id']:
+        current_user = query_db('SELECT interests FROM users WHERE id = ?', (current_user_id,), one=True)
+        if current_user and current_user['interests']:
+            current_user_interests = set(i.strip() for i in current_user['interests'].split(',') if i.strip())
+            #Calculate Intersection
+            shared_interests = list(set(user_interests).intersection(set(current_user_interests)))
 
     return render_template('user_profile.html.j2', 
                            user=user, 
@@ -342,7 +355,8 @@ def user_profile(username):
                            comments=comments,
                            followers_count=followers_count, 
                            following_count=following_count,
-                           is_following=is_currently_following)
+                           is_following=is_currently_following,
+                           shared_interests=shared_interests)
     
 
 @app.route('/u/<username>/followers')
