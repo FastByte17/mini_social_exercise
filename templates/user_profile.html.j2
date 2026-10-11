@@ -17,7 +17,16 @@
           </p>
           <p class="card-text">{{ user.profile or "No profile information provided." }}</p>
 
-          {% if shared_interests %}
+          {% if is_own_profile %}
+            <div class="my-3">
+              <strong>Your Interests:</strong>
+              {% for interest in user_interests %}
+                <span class="badge bg-primary me-1">{{ interest }}</span>
+              {% else %}
+                <span class="text-muted">You haven't added any interests yet.</span>
+              {% endfor %}
+            </div>
+          {% elif shared_interests %}
             <div class="my-3">
               <strong>Shared Interests:</strong> You and {{ user.username }} both share:
               {% for interest in shared_interests %}

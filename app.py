@@ -351,12 +351,13 @@ def user_profile(username):
     # --
     
     #Retrieve user's interests
-    user_interests = [i.strip() for i in user.get('interests', '').split(',') if i.strip()]
-    
+    user_interests = [i.strip() for i in (user.get('interests') or '').split(',') if i.strip()]
+
     shared_interests = []
     current_user_id = session.get('user_id')
-    
-    if current_user_id and current_user_id != user['id']:
+    is_own_profile = current_user_id == user['id']
+
+    if current_user_id and not is_own_profile:
         current_user = query_db('SELECT interests FROM users WHERE id = ?', (current_user_id,), one=True)
         if current_user and current_user['interests']:
             current_user_interests = set(i.strip() for i in current_user['interests'].split(',') if i.strip())
@@ -370,7 +371,9 @@ def user_profile(username):
                            followers_count=followers_count, 
                            following_count=following_count,
                            is_following=is_currently_following,
-                           shared_interests=shared_interests)
+                           shared_interests=shared_interests,
+                           user_interests=user_interests,
+                           is_own_profile=is_own_profile)
     
 
 @app.route('/u/<username>/followers')
