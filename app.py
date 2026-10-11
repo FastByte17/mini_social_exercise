@@ -360,9 +360,9 @@ def user_profile(username):
     if current_user_id and not is_own_profile:
         current_user = query_db('SELECT interests FROM users WHERE id = ?', (current_user_id,), one=True)
         if current_user and current_user['interests']:
-            current_user_interests = set(i.strip() for i in current_user['interests'].split(',') if i.strip())
-            #Calculate Intersection
-            shared_interests = list(set(user_interests).intersection(set(current_user_interests)))
+            current_user_interests = set(i.strip().lower() for i in current_user['interests'].split(',') if i.strip())
+            #Calculate Intersection, ignoring case (shown with the profile owner's spelling)
+            shared_interests = [i for i in user_interests if i.lower() in current_user_interests]
 
     return render_template('user_profile.html.j2', 
                            user=user, 
@@ -470,14 +470,22 @@ def signup():
         birthdate = request.form.get('birthdate', '')
         profile = request.form.get('profile', '')
 
+        # Interests arrive as a comma-separated string from the tag input
+        interests_list = []
+        for interest in request.form.get('interests', '').split(','):
+            interest = interest.strip()
+            if interest and interest.lower() not in (i.lower() for i in interests_list):
+                interests_list.append(interest)
+        interests = ', '.join(interests_list)
+
         hashed_password = generate_password_hash(password)
 
         db = get_db()
         cur = db.cursor()
         try:
             cur.execute(
-                'INSERT INTO users (username, password, location, birthdate, profile) VALUES (?, ?, ?, ?, ?)',
-                (username, hashed_password, location, birthdate, profile)
+                'INSERT INTO users (username, password, location, birthdate, profile, interests) VALUES (?, ?, ?, ?, ?, ?)',
+                (username, hashed_password, location, birthdate, profile, interests)
             )
             db.commit()
 

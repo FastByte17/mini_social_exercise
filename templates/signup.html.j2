@@ -24,6 +24,15 @@
         <label for="profile" class="form-label">Profile</label>
         <textarea class="form-control" id="profile" name="profile" rows="3"></textarea>
       </div>
+      <div class="mb-3">
+        <label for="interest-input" class="form-label">Interests</label>
+        <div class="form-text mt-0 mb-1">Tip: to use two words as one tag, link them with a "-" (e.g. Machine-Learning).</div>
+        <div class="form-control d-flex flex-wrap align-items-center gap-1" id="interest-box" style="cursor: text;">
+          <div id="interest-tags" class="d-flex flex-wrap gap-1"></div>
+          <input type="text" id="interest-input" class="border-0 flex-grow-1" style="outline: none; min-width: 120px;" placeholder="Type an interest and press space">
+        </div>
+        <input type="hidden" id="interests" name="interests">
+      </div>
       <div class="d-grid">
         <button type="submit" class="btn btn-primary">Sign Up</button>
       </div>
@@ -35,6 +44,68 @@
     </div>
   </div>
 </div>
+
+<script>
+  (function () {
+    const box = document.getElementById('interest-box');
+    const input = document.getElementById('interest-input');
+    const tagList = document.getElementById('interest-tags');
+    const hidden = document.getElementById('interests');
+    const interests = [];
+
+    function render() {
+      tagList.innerHTML = '';
+      interests.forEach(function (interest, index) {
+        const tag = document.createElement('span');
+        tag.className = 'badge bg-primary d-inline-flex align-items-center';
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn-close btn-close-white me-1';
+        remove.style.fontSize = '0.5rem';
+        remove.setAttribute('aria-label', 'Remove ' + interest);
+        remove.addEventListener('click', function () {
+          interests.splice(index, 1);
+          render();
+          input.focus();
+        });
+
+        tag.appendChild(remove);
+        tag.appendChild(document.createTextNode(interest));
+        tagList.appendChild(tag);
+      });
+      hidden.value = interests.join(', ');
+    }
+
+    function addInterest() {
+      const value = input.value.trim().replace(/,/g, '');
+      input.value = '';
+      if (!value) return;
+      // Skip duplicates, ignoring case
+      if (interests.some(i => i.toLowerCase() === value.toLowerCase())) return;
+      interests.push(value);
+      render();
+    }
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === ' ' || e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        addInterest();
+      } else if (e.key === 'Backspace' && input.value === '' && interests.length) {
+        interests.pop();
+        render();
+      }
+    });
+
+    // Clicking anywhere in the box focuses the text input
+    box.addEventListener('click', function (e) {
+      if (e.target === box || e.target === tagList) input.focus();
+    });
+
+    // Include anything still typed in the box when the form is submitted
+    input.form.addEventListener('submit', addInterest);
+  })();
+</script>
 {% endblock %}```
 
 **Change Made:**
