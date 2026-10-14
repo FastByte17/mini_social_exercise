@@ -18,14 +18,29 @@
           <p class="card-text">{{ user.profile or "No profile information provided." }}</p>
 
           {% if is_own_profile %}
-            <div class="my-3">
+            <div class="my-3" id="interests-view">
               <strong>Your Interests:</strong>
               {% for interest in user_interests %}
                 <span class="badge bg-primary me-1">{{ interest }}</span>
               {% else %}
                 <span class="text-muted">You haven't added any interests yet.</span>
               {% endfor %}
+              <button type="button" class="btn btn-sm btn-warning ms-2" id="edit-interests-btn">Edit Interests</button>
             </div>
+
+            <form action="{{ url_for('update_interests') }}" method="POST" class="my-3 d-none" id="interests-edit">
+              <label for="interest-input" class="form-label"><strong>Edit Interests</strong></label>
+              <div class="form-text mt-0 mb-1">Tip: to use two words as one tag, link them with a "-" (e.g. Machine-Learning).</div>
+              <div class="form-control d-flex flex-wrap align-items-center gap-1" id="interest-box" style="cursor: text;">
+                <div id="interest-tags" class="d-flex flex-wrap gap-1"></div>
+                <input type="text" id="interest-input" class="border-0 flex-grow-1" style="outline: none; min-width: 120px;" placeholder="Type an interest and press space">
+              </div>
+              <input type="hidden" id="interests" name="interests">
+              <div class="mt-2">
+                <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                <button type="button" class="btn btn-sm btn-light" id="cancel-interests-btn">Cancel</button>
+              </div>
+            </form>
           {% elif shared_interests %}
             <div class="my-3">
               <strong>Shared Interests:</strong> You and {{ user.username }} both share:
@@ -114,4 +129,29 @@
   </div>
 
 </div>
+
+{% if is_own_profile %}
+<script src="{{ url_for('static', filename='interest_tags.js') }}"></script>
+<script>
+  (function () {
+    const saved = {{ user_interests|tojson }};
+    const tags = initInterestTags(saved);
+    const view = document.getElementById('interests-view');
+    const edit = document.getElementById('interests-edit');
+
+    document.getElementById('edit-interests-btn').addEventListener('click', function () {
+      view.classList.add('d-none');
+      edit.classList.remove('d-none');
+      document.getElementById('interest-input').focus();
+    });
+
+    // Cancel throws away unsaved changes
+    document.getElementById('cancel-interests-btn').addEventListener('click', function () {
+      tags.reset(saved);
+      edit.classList.add('d-none');
+      view.classList.remove('d-none');
+    });
+  })();
+</script>
+{% endif %}
 {% endblock %}

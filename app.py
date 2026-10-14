@@ -376,6 +376,35 @@ def user_profile(username):
                            is_own_profile=is_own_profile)
     
 
+def clean_interests(raw):
+    """Turns the comma-separated string from the tag input into 'A, B, C', dropping blanks and case-insensitive duplicates."""
+    interests_list = []
+    for interest in raw.split(','):
+        interest = interest.strip()
+        if interest and interest.lower() not in (i.lower() for i in interests_list):
+            interests_list.append(interest)
+    return ', '.join(interests_list)
+
+
+@app.route('/u/interests', methods=['POST'])
+def update_interests():
+    """Handles the current user editing their interests from their profile page."""
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to edit your interests.', 'danger')
+        return redirect(url_for('login'))
+
+    interests = clean_interests(request.form.get('interests', ''))
+    db = get_db()
+    db.execute('UPDATE users SET interests = ? WHERE id = ?', (interests, user_id))
+    db.commit()
+
+    flash('Your interests were updated.', 'success')
+    return redirect(url_for('user_profile', username=session.get('username')))
+
+
 @app.route('/u/<username>/followers')
 def user_followers(username):
     user = query_db('SELECT * FROM users WHERE username = ?', (username,), one=True)
@@ -470,13 +499,7 @@ def signup():
         birthdate = request.form.get('birthdate', '')
         profile = request.form.get('profile', '')
 
-        # Interests arrive as a comma-separated string from the tag input
-        interests_list = []
-        for interest in request.form.get('interests', '').split(','):
-            interest = interest.strip()
-            if interest and interest.lower() not in (i.lower() for i in interests_list):
-                interests_list.append(interest)
-        interests = ', '.join(interests_list)
+        interests = clean_interests(request.form.get('interests', ''))
 
         hashed_password = generate_password_hash(password)
 
