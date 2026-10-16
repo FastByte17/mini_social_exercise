@@ -955,22 +955,54 @@ def loop_color(user_id):
 
 # Assignment 2.2
 def user_risk_analysis(user_id):
-    """
-    Args:
-        user_id: The ID of the user on which we perform risk analysis.
-
-    Returns:
-        A float number score showing the risk associated with this user. There are no strict rules or bounds to this score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk. (An upper bound of 5.0 is applied to this score elsewhere in the codebase) 
-        
-        You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-        Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
-    """
     
-    score = 0
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    
+    if not user:
+        return 0.0
+    
+    #Step 1: Profile Score
+    profile_text = user['profile'] or ""
+    _, profile_score = moderate_content(profile_text)
+    
+    #Step 2: Average Post Score
+    user_posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    if user_posts:
+        post_scores = [moderate_content(p['content'])[3] for p in user_posts]
+        avg_post_score = sum(post_scores) / len(post_scores)
+    else:
+        avg_post_score = 0.0
+        
+    #Step 3: Average Comment Score
+    user_comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    if user_comments:
+        comment_scores = [moderate_content(c['content'])[3] for c in user_comments]
+        avg_comment_score = sum(comment_scores) / len(comment_scores)
+    else:
+        avg_comment_score = 0.0
 
-    return score;
+    #Step 4: Combine Scores with Weighting
+    content_risk_score = (profile_score * 1.0) + (avg_post_score * 3.0) + (avg_comment_score * 1.0)
+    
+    #Step 5: Apply Account Age Multiplier
+    created_at = user['created_at']
+    if isinstance(created_at, str):
+        created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+        
+    account_age_days = (datetime.now() - created_at).days
+    
+    if account_age_days < 7:
+        multiplier = 1.5
+    elif account_age_days < 30:
+        multiplier = 1.2
+    else:
+        multiplier = 1.0
+        
+    user_risk_score = content_risk_score * multiplier
+    
+    #Step 6: Cap the score at 5.0
+    return min(5.0, user_risk_score)
+
 
     
 # Assignment 2.1
