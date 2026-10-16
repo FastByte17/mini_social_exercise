@@ -211,11 +211,10 @@ def feed():
     weekly_goal = 5
     
     if current_user_id:
-        #Retrieve the user's weekly goal and progress from the database
-        user_row = query_db('SELECT weekly_goal, weekly_progress FROM users WHERE id = ?', (current_user_id,), one=True)
+        #Retrieve the user's weekly goal from the database
+        user_row = query_db('SELECT weekly_goal FROM users WHERE id = ?', (current_user_id,), one=True)
         if user_row and user_row['weekly_goal']:
             weekly_goal = user_row['weekly_goal']
-            weekly_progress = user_row['weekly_progress']
 
         #Calculate the user's weekly progress based on their posts in the last 7 days
         posts_count = query_db('SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND created_at >= datetime("now", "-7 days")', (current_user_id,), one=True)['count']
@@ -248,24 +247,78 @@ def add_post():
         return redirect(url_for('login'))
 
     # Get content from the submitted form
-    content = request.form.get('content')
-
-    # Pass the user's content through the moderation function
-    moderated_content = content
+    content = request.form.get('content', '')
 
     # Basic validation to ensure post is not empty
-    if moderated_content and moderated_content.strip():
-        db = get_db()
-        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
-                   (user_id, moderated_content))
-        db.commit()
-        flash('Your post was successfully created!', 'success')
-    else:
-        # This will catch empty posts or posts that were fully censored
-        flash('Post cannot be empty or was fully censored.', 'warning')
+    if not content.strip():
+        flash('Post cannot be empty.', 'warning')
+        return redirect(url_for('feed'))
+
+    # Pass the user's content through the moderation function (point-of-action feedback, Design Claim 20)
+    allowed, category, message = moderation_feedback(content, 'post')
+    if not allowed:
+        flash(message, category)
+        return redirect(url_for('feed'))
+
+    # Store the original text; moderation is applied again whenever posts are displayed,
+    # so the admin risk scores still see the original wording
+    db = get_db()
+    db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+               (user_id, content))
+    db.commit()
+    flash(message, category)
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
+
+
+def moderation_issues(content, moderated_content, score):
+    """Works out which scored moderation rules a piece of content triggered, as readable descriptions.
+    Mirrors the weights in moderate_content: 2.0 per link, 0.5 for excessive caps, 2.0 per mild profanity."""
+    issues = []
+    remaining = score
+
+    links_removed = moderated_content.count('[LINK REMOVED]') - content.count('[LINK REMOVED]')
+    if links_removed > 0:
+        issues.append(f'{links_removed} external link(s)')
+        remaining -= 2.0 * links_removed
+
+    alphas = [c for c in content if c.isalpha()]
+    if len(alphas) > 15 and sum(1 for c in alphas if c.isupper()) / len(alphas) > 0.7:
+        issues.append('mostly capital letters')
+        remaining -= 0.5
+
+    if remaining > 0:
+        issues.append('mild profanity')
+
+    return issues
+
+
+def moderation_feedback(content, kind):
+    """
+    Runs content through moderation and decides what the user is told at the moment they submit it.
+    kind is 'post' or 'comment'. Returns (allowed, flash_category, message).
+    """
+    moderated_content, score = moderate_content(content)
+    noun = kind.capitalize()
+
+    # Severe violations: Tier 1 words or spam/scam phrases replace the whole text
+    if moderated_content.startswith('[Content Removed'):
+        if 'Spam/Scam' in moderated_content:
+            return False, 'danger', f'{noun} blocked: it contains phrases associated with spam or scams, which violates our spam/scam policy.'
+        return False, 'danger', f'{noun} blocked: it contains severe profanity, which violates our community rules.'
+
+    issues = moderation_issues(content, moderated_content, score)
+
+    # Many smaller violations can add up to a severe score too
+    if score >= 5.0:
+        return False, 'danger', f'{noun} blocked: it has too many rule violations ({", ".join(issues)}). Please revise it and try again.'
+
+    if score > 0:
+        return True, 'info', (f'Your {kind} was published! Friendly reminder: we flagged {", ".join(issues)}. '
+                              'Links and profanity are automatically filtered according to community guidelines.')
+
+    return True, 'success', f'Your {kind} was successfully created!'
     
     
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
@@ -578,11 +631,14 @@ def add_comment(post_id):
 
     # Basic validation to ensure comment is not empty
     if content and content.strip():
-        db = get_db()
-        db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
-                   (post_id, user_id, content))
-        db.commit()
-        flash('Your comment was added.', 'success')
+        # Same point-of-action moderation feedback as posts
+        allowed, category, message = moderation_feedback(content, 'comment')
+        if allowed:
+            db = get_db()
+            db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
+                       (post_id, user_id, content))
+            db.commit()
+        flash(message, category)
     else:
         flash('Comment cannot be empty.', 'warning')
 
@@ -968,7 +1024,7 @@ def user_risk_analysis(user_id):
     #Step 2: Average Post Score
     user_posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
     if user_posts:
-        post_scores = [moderate_content(p['content'])[3] for p in user_posts]
+        post_scores = [moderate_content(p['content'])[1] for p in user_posts]
         avg_post_score = sum(post_scores) / len(post_scores)
     else:
         avg_post_score = 0.0
@@ -976,7 +1032,7 @@ def user_risk_analysis(user_id):
     #Step 3: Average Comment Score
     user_comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
     if user_comments:
-        comment_scores = [moderate_content(c['content'])[3] for c in user_comments]
+        comment_scores = [moderate_content(c['content'])[1] for c in user_comments]
         avg_comment_score = sum(comment_scores) / len(comment_scores)
     else:
         avg_comment_score = 0.0
@@ -1017,19 +1073,19 @@ def moderate_content(content):
     #Level 1: Severe Violations
     #Rule 1.1.1: Tier 1 words
     
-    for word in TIER_1_WORDS:
+    for word in TIER1_WORDS:
         pattern = r'\b' + re.escape(word) + r'\b'
         if re.search(pattern, moderated_content, re.IGNORECASE):
             return "[Content Removed Due to Severe Violation]", 5.0
         
     #Rule 1.1.2: Tier 2 words
-    for word in TIER_2_WORDS:
+    for word in TIER2_PHRASES:
         if re.search(re.escape(word), moderated_content, re.IGNORECASE):
             return "[Content Removed Due to Spam/Scam Policy]", 5.0
         
     #Level 2: Scored Violations and Filtering
     #Rule 1.2.1: Tier 3 words
-    for word in TIER_3_WORDS:
+    for word in TIER3_WORDS:
         pattern = r'\b' + re.escape(word) + r'\b'
         matches = re.findall(pattern, moderated_content, re.IGNORECASE)
         if matches:
