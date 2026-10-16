@@ -554,6 +554,13 @@ def signup():
 
         interests = clean_interests(request.form.get('interests', ''))
 
+        # Same point-of-action moderation feedback as posts and comments
+        bio_allowed, bio_category, bio_message = moderation_feedback(profile, 'bio')
+        if not bio_allowed:
+            flash(bio_message + ' Please edit your bio and try again.', bio_category)
+            return render_template('signup.html.j2', form=request.form,
+                                   interests=[i.strip() for i in interests.split(',') if i.strip()])
+
         hashed_password = generate_password_hash(password)
 
         db = get_db()
@@ -575,6 +582,9 @@ def signup():
 
             # 3. Flash a welcome message and redirect to the feed.
             flash(f'Welcome, {username}! Your account has been created.', 'success')
+            # Remind the user if their bio was accepted but filtered
+            if bio_category == 'info':
+                flash(bio_message, bio_category)
             return redirect(url_for('feed')) # Redirect to the main feed/dashboard
 
         except sqlite3.IntegrityError:
@@ -582,8 +592,12 @@ def signup():
         finally:
             cur.close()
             db.close()
-            
-    return render_template('signup.html.j2')
+
+        # Keep what the user typed (except the password) so they don't have to start over
+        return render_template('signup.html.j2', form=request.form,
+                               interests=[i.strip() for i in interests.split(',') if i.strip()])
+
+    return render_template('signup.html.j2', form={}, interests=[])
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

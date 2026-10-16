@@ -6,7 +6,7 @@
     <form method="POST">
       <div class="mb-3">
         <label for="username" class="form-label">Username</label>
-        <input type="text" class="form-control" id="username" name="username" required>
+        <input type="text" class="form-control" id="username" name="username" value="{{ form.get('username', '') }}" required>
       </div>
       <div class="mb-3">
         <label for="password" class="form-label">Password</label>
@@ -14,15 +14,15 @@
       </div>
       <div class="mb-3">
         <label for="location" class="form-label">Location</label>
-        <input type="text" class="form-control" id="location" name="location">
+        <input type="text" class="form-control" id="location" name="location" value="{{ form.get('location', '') }}">
       </div>
       <div class="mb-3">
         <label for="birthdate" class="form-label">Birthdate</label>
-        <input type="date" class="form-control" id="birthdate" name="birthdate">
+        <input type="date" class="form-control" id="birthdate" name="birthdate" value="{{ form.get('birthdate', '') }}">
       </div>
       <div class="mb-3">
         <label for="profile" class="form-label">Profile</label>
-        <textarea class="form-control" id="profile" name="profile" rows="3"></textarea>
+        <textarea class="form-control" id="profile" name="profile" rows="3">{{ form.get('profile', '') }}</textarea>
       </div>
       <div class="mb-3">
         <label for="interest-input" class="form-label">Interests</label>
@@ -46,7 +46,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='interest_tags.js') }}"></script>
-<script>initInterestTags([]);</script>
+<script>initInterestTags({{ interests|tojson }});</script>
 {% endblock %}```
 
 **Change Made:**
