@@ -975,24 +975,48 @@ def user_risk_analysis(user_id):
     
 # Assignment 2.1
 def moderate_content(content):
-    """
-    Args
-        content: the text content of a post or comment to be moderated.
-        
-    Returns: 
-        A tuple containing the moderated content (string) and a severity score (float). There are no strict rules or bounds to the severity score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk.
     
-    This function moderates a string of content and calculates a severity score based on
-    rules loaded from the 'censorship.dat' file. These are already loaded as TIER1_WORDS, TIER2_PHRASES and TIER3_WORDS. Tier 1 corresponds to strong profanity, Tier 2 to scam/spam phrases and Tier 3 to mild profanity.
-    
-    You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-    Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
-    """
+    if not content:
+        return "", 0.0
 
     moderated_content = content
     score = 0
+    
+    #Level 1: Severe Violations
+    #Rule 1.1.1: Tier 1 words
+    
+    for word in TIER_1_WORDS:
+        pattern = r'\b' + re.escape(word) + r'\b'
+        if re.search(pattern, moderated_content, re.IGNORECASE):
+            return "[Content Removed Due to Severe Violation]", 5.0
+        
+    #Rule 1.1.2: Tier 2 words
+    for word in TIER_2_WORDS:
+        if re.search(re.escape(word), moderated_content, re.IGNORECASE):
+            return "[Content Removed Due to Spam/Scam Policy]", 5.0
+        
+    #Level 2: Scored Violations and Filtering
+    #Rule 1.2.1: Tier 3 words
+    for word in TIER_3_WORDS:
+        pattern = r'\b' + re.escape(word) + r'\b'
+        matches = re.findall(pattern, moderated_content, re.IGNORECASE)
+        if matches:
+            score += 2.0 * len(matches)
+            moderated_content = re.sub(pattern, lambda m: '*' * len(m.group(0)), moderated_content, flags=re.IGNORECASE)
+            
+    #Rule 1.2.2: External Links
+    external_link_pattern = r'https?://\S+|www\.\S+'
+    urls = re.findall(external_link_pattern, moderated_content)
+    if urls:
+        score += 2.0 * len(urls)
+        moderated_content = re.sub(external_link_pattern, '[LINK REMOVED]', moderated_content)
+        
+    #Rule 1.2.3: Excessive Capitalization
+    alphas = [c for c in content if c.isalpha()]
+    if len(alphas) > 15:
+        uppercase_count = sum(1 for c in alphas if c.isupper())
+        if uppercase_count / len(alphas) > 0.7:
+            score += 0.5
     
     return moderated_content, score
 
