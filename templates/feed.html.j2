@@ -21,6 +21,18 @@
 </div>
 {% endif %}
 
+{% if show_intro_prompt %}
+<!-- Introduction Prompt: shown to users whose account is less than 7 days old and who have not posted yet -->
+<div class="col-md-8 mx-auto mb-4">
+  <div class="alert alert-success alert-dismissible fade show mb-0" role="alert">
+    <h5 class="alert-heading">🌱 Welcome to the community, {{ session.get('username') }}!</h5>
+    <p class="mb-2">You're new here, so why not introduce yourself? Tell everyone a bit about who you are and what you're interested in.</p>
+    <button type="button" class="btn btn-sm btn-success" id="intro-prompt-btn">Write an introduction</button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+</div>
+{% endif %}
+
 {% if session.get('user_id') %}
 <div class="col-md-8 mx-auto mb-4">
   <div class="card shadow-sm">
@@ -28,7 +40,7 @@
       <h5 class="card-title">Create a new post</h5>
       <form action="{{ url_for('add_post') }}" method="POST">
         <div class="mb-3">
-          <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
+          <textarea class="form-control" id="new-post-content" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
         </div>
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>
@@ -65,6 +77,12 @@
 
 <div class="col-md-8 mx-auto">
   {% for entry in posts %}
+  {% if entry.is_newcomer %}
+  <!-- Encourage friendly replies to posts from new members -->
+  <div class="small text-success mb-1 ms-1">
+    🌱 New Member Post • <em>Keep comments friendly and welcoming!</em>
+  </div>
+  {% endif %}
   <div class="card mb-4" id="post-{{ entry.post.id }}">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center">
@@ -74,6 +92,9 @@
 </a>
           {% else %}
           <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
+          {% endif %}
+          {% if entry.is_newcomer %}
+          <span class="badge bg-success align-middle fs-6 fw-normal" title="Joined {% if entry.account_age_days == 0 %}today{% elif entry.account_age_days == 1 %}1 day ago{% else %}{{ entry.account_age_days }} days ago{% endif %}">🌱 New member</span>
           {% endif %}
         </h3>
 
@@ -216,4 +237,20 @@
       Next &raquo;
     </a>
   </div>
+
+{% if show_intro_prompt %}
+<script>
+  // Introduction Prompt: start an introduction post in the "Create a new post" box
+  document.getElementById('intro-prompt-btn').addEventListener('click', function () {
+    const box = document.getElementById('new-post-content');
+    // Don't overwrite something the user has already started typing
+    if (!box.value.trim()) {
+      box.value = "Hi everyone! I'm new here. A little about me: ";
+    }
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  });
+</script>
+{% endif %}
 {% endblock %}
