@@ -1125,28 +1125,73 @@ def moderate_content(content):
 # Coding Assignment #3
 # Assignment 3.1
 def recommend(user_id, filter_following):
-    """
-    Args:
-        user_id: The ID of the current user.
-        filter_following: Boolean, True if we only want to see recommendations from followed users.
-
-    Returns:
-        A list of 5 recommended posts, in reverse-chronological order.
-
-    To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
     
-    Users: @starboy99, @DancingDolphin, @blogger_bob
-    Posts: 1810, 1875, 1880, 2113
+    #Recommend 5 relevant posts based on positive reactions (likes, loves, etc.) and followed accounts.
     
-    Materials: 
-    - https://www.nvidia.com/en-us/glossary/recommendation-system/
-    - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
-    - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
-    """
+    if not user_id:
+        return query_db(''' SELECT p.id, p.content, p.created_at, u.username, u.id as user_id FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC LIMIT 5 ''')
+    
+    #1. Get the list of users that the current user is following
+    followed_rows = query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,))
+    followed_ids =  set(r['followed_id'] for r in followed_rows) if followed_rows else set()
+    
+    #2. Get posts postively reacted to by the current user
+    positive_types = ('like', 'love', 'laugh', 'wow')
+    user_likes = query_db(''' SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN (?, ?, ?, ?) ''', (user_id, *positive_types))
+    liked_post_ids = set(r['post_id'] for r in user_likes) if user_likes else set()
+    
+    #3. Find co-engaged users (users who reacted positively to the same posts)
+    similar_user_ids = set()
+    if liked_post_ids:
+        placeholders = ','.join(['?'] * len(liked_post_ids))
+        similar_rows = query_db(f''' SELECT DISTINCT user_id FROM reactions WHERE post_id IN ({placeholders}) AND user_id != ? AND reaction_type IN (?, ?, ?, ?) ''', (*liked_post_ids, user_id, *positive_types))
+        if similar_rows:
+            similar_user_ids = set(r['user_id'] for r in similar_rows)
+            
+    #4. Fetch candidate posts (exclude posts created or already reacted to by the target user)
+    candidate_query = ''' SELECT p.id, p.content, p.created_at, u.username, u.id as user_id FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id != ? AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ?) '''
+    params = [user_id, user_id]
+    
+    if filter_following and followed_ids:
+        placeholders = ','.join(['?'] * len(followed_ids))
+        candidate_query += f' AND p.user_id IN ({placeholders})'
+        params.extend(followed_ids)
+        
+    candidate_query += ' ORDER BY p.created_at DESC LIMIT 50'
+    candidates = query_db(candidate_query, params)
+    
+    if not candidates:
+        #Fallback if no candidates found
+        return query_db(''' SELECT p.id, p.content, p.created_at, u.username, u.id as user_id FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id != ? ORDER BY p.created_at DESC LIMIT 5 ''', (user_id,))
+    
+    #5. Score candidate posts
+    scored_posts = []
+    for post in candidates:
+        score = 0.0
+        post_author = post['user_id']
+        
+        #Weight for followed authors
+        if post_author in followed_ids:
+            score += 3.0
+            
+        #Weight for reactions from similar users
+        reactions_on_post = query_db(''' SELECT user_id FROM reactions WHERE post_id = ? AND reaction_type IN (?, ?, ?, ?) ''', (post['id'], *positive_types))
+        
+        if reactions_on_post:
+            for r in reactions_on_post:
+                if r['user_id'] in similar_user_ids:
+                    score += 2.0
+                elif r['user_id'] in followed_ids:
+                    score += 1.5
+                    
+        scored_posts.append((score, post))
+        
+    #Sort candidates by score (descending), then by created_at (descending)
+    scored_posts.sort(key=lambda x: (x, x[1]['created_at']), reverse=True)
+    
+    #Return top 5 scored posts
+    return [post for score, post in scored_posts[:5]]
 
-    recommended_posts = {} 
-
-    return recommended_posts;
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
