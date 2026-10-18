@@ -1189,9 +1189,11 @@ def recommend(user_id, filter_following):
     Recommends 5 relevant posts based on the posts the user reacted to positively and the users they follow.
 
     Each candidate post (not written by the user, not already reacted to) gets a relevance score:
-      +0-10 topic similarity: the share of the post's words that also appear in the user's liked posts.
-            Words are weighted by inverse document frequency, so rare topic words like "diy" count far more
-            than words that appear in many posts.
+      +0-10 topic similarity: TF-IDF cosine similarity between the post and the user's liked posts.
+            TF (term frequency): how often a word appears in the post, and in how many liked posts for the
+            user profile, so words that run through many liked posts define the user's interests.
+            IDF (inverse document frequency): rare topic words like "diy" count far more than words that
+            appear in many posts.
       +2.0  if its author is someone the user follows
       +1.0  if its author wrote a post the user reacted to positively
     Topic similarity carries the most weight so recommendations stay on-topic; the author bonuses
@@ -1225,7 +1227,7 @@ def recommend(user_id, filter_following):
     if not followed_ids and not liked_posts:
         return sorted(candidates, key=lambda p: p['created_at'], reverse=True)[:5]
 
-    # 4. Build the user's topic profile from their liked posts, weighting words by rarity (IDF)
+    # 4. IDF: weight each word by how rare it is across all posts
     all_posts = query_db('SELECT content FROM posts')
     doc_freq = collections.Counter()
     for p in all_posts:
@@ -1233,9 +1235,16 @@ def recommend(user_id, filter_following):
     total_posts = len(all_posts)
     idf = lambda word: math.log(total_posts / (1 + doc_freq[word]))
 
-    liked_words = set()
+    def tfidf_vector(term_counts):
+        """Turns {word: TF} into {word: TF * IDF} plus the vector's length, for cosine similarity."""
+        vector = {w: tf * idf(w) for w, tf in term_counts.items()}
+        return vector, math.sqrt(sum(v * v for v in vector.values()))
+
+    # User profile: TF = number of liked posts each word appears in
+    profile_counts = collections.Counter()
     for p in liked_posts:
-        liked_words.update(tokenize(p['content']))
+        profile_counts.update(set(tokenize(p['content'])))
+    profile_vector, profile_norm = tfidf_vector(profile_counts)
 
     # 5. Score each candidate
     scored_posts = []
@@ -1245,11 +1254,12 @@ def recommend(user_id, filter_following):
             score += 2.0
         if post['user_id'] in liked_author_ids:
             score += 1.0
-        # Topic similarity: share of the post's word weight that overlaps with the liked posts, scaled to 0-10
-        post_words = set(tokenize(post['content']))
-        post_weight = sum(idf(w) for w in post_words)
-        if post_weight > 0:
-            score += 10.0 * sum(idf(w) for w in post_words & liked_words) / post_weight
+        # Topic similarity: cosine similarity of TF-IDF vectors (0-1), scaled to 0-10
+        # Post vector: TF = number of times each word appears in the post
+        post_vector, post_norm = tfidf_vector(collections.Counter(tokenize(post['content'])))
+        if post_norm > 0 and profile_norm > 0:
+            dot = sum(weight * profile_vector.get(w, 0.0) for w, weight in post_vector.items())
+            score += 10.0 * dot / (post_norm * profile_norm)
         if score > 0:
             scored_posts.append((score, post))
 
