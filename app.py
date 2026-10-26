@@ -3,6 +3,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
 import json
+import math
 import sqlite3
 import hashlib
 import re
@@ -112,6 +113,18 @@ REACTION_EMOJIS = {
 REACTION_TYPES = list(REACTION_EMOJIS.keys())
 
 
+def get_account_age_days(user_id):
+    """Returns how many full days ago a user's account was created, or None if unknown."""
+    row = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if not row or not row['created_at']:
+        return None
+    created_at = row['created_at']
+    if isinstance(created_at, str):
+        created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+    # SQLite's CURRENT_TIMESTAMP is in UTC, so compare against UTC
+    return (datetime.utcnow() - created_at).days
+
+
 @app.route('/')
 def feed():
     #  1. Get Pagination and Filter Parameters 
@@ -214,12 +227,19 @@ def feed():
             comment_dict = dict(comment)
             comment_dict['content'], _ = moderate_content(comment_dict['content'])
             comments_moderated.append(comment_dict)
+
+        # Check if the post author is a newcomer (account less than 7 days old)
+        account_age_days = get_account_age_days(post['user_id'])
+        is_newcomer = account_age_days is not None and account_age_days < 7
+
         posts_data.append({
             'post': post_dict,
             'reactions': reactions,
             'user_reaction': user_reaction,
             'followed_poster': followed_poster,
-            'comments': comments_moderated
+            'comments': comments_moderated,
+            'account_age_days': account_age_days, # Author's account age, for rendering
+            'is_newcomer': is_newcomer # Pass newcomer status to Jinja2
         })
 
     # Calculate Weekly Progress and Goal for the Current User
@@ -238,8 +258,19 @@ def feed():
         comments_count = query_db('SELECT COUNT(*) as count FROM comments WHERE user_id = ? AND created_at >= datetime("now", "-7 days")', (current_user_id,), one=True)['count']
         
         weekly_progress = posts_count + comments_count
-        
-    #  4. Render Template with Pagination Info 
+
+    # Check if the logged-in user is a newcomer, to drive the Introduction Prompt
+    is_current_user_newcomer = False
+    show_intro_prompt = False
+    if current_user_id:
+        current_user_age_days = get_account_age_days(current_user_id)
+        is_current_user_newcomer = current_user_age_days is not None and current_user_age_days < 7
+        # Only prompt newcomers who haven't made their first post yet
+        if is_current_user_newcomer:
+            has_posted = query_db('SELECT 1 FROM posts WHERE user_id = ? LIMIT 1', (current_user_id,), one=True)
+            show_intro_prompt = not has_posted
+
+    #  4. Render Template with Pagination Info
     return render_template('feed.html.j2', 
                            posts=posts_data, 
                            current_sort=sort,
@@ -249,10 +280,11 @@ def feed():
                            reaction_emojis=REACTION_EMOJIS,
                            reaction_types=REACTION_TYPES,
                            weekly_progress=weekly_progress, # Pass the user's weekly progress
-                           weekly_goal=weekly_goal # Pass the user's weekly goal
+                           weekly_goal=weekly_goal, # Pass the user's weekly goal
+                           is_current_user_newcomer=is_current_user_newcomer, # Account is less than 7 days old
+                           show_intro_prompt=show_intro_prompt # Newcomer who hasn't posted yet: show the Introduction Prompt
                            )
     
-        
 @app.route('/posts/new', methods=['POST'])
 def add_post():
     """Handles creating a new post from the feed."""
@@ -392,7 +424,7 @@ def moderation_edit():
 
     if kind == 'comment' and post_id:
         return redirect(url_for('post_detail', post_id=post_id) + '#edit-draft')
-    return redirect(url_for('feed') + '#edit-draft')
+    return redirect(url_for('feed') + '#new-post-content')
     
     
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
@@ -491,7 +523,11 @@ def user_profile(username):
             #Calculate Intersection, ignoring case (shown with the profile owner's spelling)
             shared_interests = [i for i in user_interests if i.lower() in current_user_interests]
 
-    return render_template('user_profile.html.j2', 
+    # Check if the profile owner is a newcomer (account less than 7 days old)
+    account_age_days = get_account_age_days(user['id'])
+    is_newcomer = account_age_days is not None and account_age_days < 7
+
+    return render_template('user_profile.html.j2',
                            user=user, 
                            posts=posts, 
                            comments=comments,
@@ -500,7 +536,9 @@ def user_profile(username):
                            is_following=is_currently_following,
                            shared_interests=shared_interests,
                            user_interests=user_interests,
-                           is_own_profile=is_own_profile)
+                           is_own_profile=is_own_profile,
+                           account_age_days=account_age_days,
+                           is_newcomer=is_newcomer)
     
 
 def split_interests(raw):
@@ -686,13 +724,18 @@ def post_detail(post_id):
         comment['content'] = moderated_comment_content
         comments.append(comment)
 
+    # Check if the post author is a newcomer (account less than 7 days old)
+    account_age_days = get_account_age_days(post['user_id'])
+    is_newcomer = account_age_days is not None and account_age_days < 7
+
     # Pass the moderated data to the template
     return render_template('post_detail.html.j2',
                            post=post,
                            reactions=reactions,
                            comments=comments,
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           is_newcomer=is_newcomer)
 
 @app.route('/about')
 def about():
@@ -1224,8 +1267,9 @@ def user_risk_analysis(user_id):
     if isinstance(created_at, str):
         created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
         
-    account_age_days = (datetime.now() - created_at).days
-    
+    # SQLite's CURRENT_TIMESTAMP is in UTC, so compare against UTC
+    account_age_days = (datetime.utcnow() - created_at).days
+
     if account_age_days < 7:
         multiplier = 1.5
     elif account_age_days < 30:
@@ -1289,29 +1333,106 @@ def moderate_content(content):
 
 # Coding Assignment #3
 # Assignment 3.1
+POSITIVE_REACTIONS = ('like', 'love', 'laugh', 'wow')
+
+# Common words that say nothing about a post's topic
+STOPWORDS = set('''
+the and for are but not you your yours all any can had has have her his him its our out was were will with this that
+these those them they their there then than what when where which while who whom why how just about into from over
+under again more most some such only own same very too off once here both each few other also get got been being
+did does doing would could should may might must shall one two today day time really much new now like love so my me
+'''.split())
+
+
+def tokenize(text):
+    """Splits text into lowercase topic words, dropping hashtag symbols, short words and stopwords."""
+    return [w for w in re.findall(r'[a-z]+', (text or '').lower()) if len(w) >= 3 and w not in STOPWORDS]
+
+
 def recommend(user_id, filter_following):
     """
-    Args:
-        user_id: The ID of the current user.
-        filter_following: Boolean, True if we only want to see recommendations from followed users.
+    Recommends 5 relevant posts based on the posts the user reacted to positively and the users they follow.
 
-    Returns:
-        A list of 5 recommended posts, in reverse-chronological order.
-
-    To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
-    
-    Users: @starboy99, @DancingDolphin, @blogger_bob
-    Posts: 1810, 1875, 1880, 2113
-    
-    Materials: 
-    - https://www.nvidia.com/en-us/glossary/recommendation-system/
-    - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
-    - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
+    Each candidate post (not written by the user, not already reacted to) gets a relevance score:
+      +0-10 topic similarity: TF-IDF cosine similarity between the post and the user's liked posts.
+            TF (term frequency): how often a word appears in the post, and in how many liked posts for the
+            user profile, so words that run through many liked posts define the user's interests.
+            IDF (inverse document frequency): rare topic words like "diy" count far more than words that
+            appear in many posts.
+      +2.0  if its author is someone the user follows
+      +1.0  if its author wrote a post the user reacted to positively
+    Topic similarity carries the most weight so recommendations stay on-topic; the author bonuses
+    move posts from followed and liked authors up without letting their off-topic posts take over.
+    The 5 highest-scoring posts are returned in reverse-chronological order.
     """
+    base_query = '''SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+                    FROM posts p JOIN users u ON p.user_id = u.id'''
 
-    recommended_posts = {} 
+    # Logged-out users have no history, so show the newest posts
+    if not user_id:
+        return query_db(base_query + ' ORDER BY p.created_at DESC LIMIT 5')
 
-    return recommended_posts;
+    # 1. Users the current user follows
+    followed_ids = {r['followed_id'] for r in query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,))}
+
+    # 2. Posts the current user reacted to positively, and their authors
+    placeholders = ','.join('?' * len(POSITIVE_REACTIONS))
+    liked_posts = query_db(f'''SELECT p.id, p.content, p.user_id FROM reactions r JOIN posts p ON r.post_id = p.id
+                               WHERE r.user_id = ? AND r.reaction_type IN ({placeholders})''',
+                           (user_id, *POSITIVE_REACTIONS))
+    liked_author_ids = {p['user_id'] for p in liked_posts}
+
+    # 3. Candidate posts: not the user's own, and not already reacted to
+    candidates = query_db(base_query + ''' WHERE p.user_id != ?
+                          AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ?)''', (user_id, user_id))
+    if filter_following:
+        candidates = [p for p in candidates if p['user_id'] in followed_ids]
+
+    # Cold start: nothing to base recommendations on yet, so show the newest posts
+    if not followed_ids and not liked_posts:
+        return sorted(candidates, key=lambda p: p['created_at'], reverse=True)[:5]
+
+    # 4. IDF: weight each word by how rare it is across all posts
+    all_posts = query_db('SELECT content FROM posts')
+    doc_freq = collections.Counter()
+    for p in all_posts:
+        doc_freq.update(set(tokenize(p['content'])))
+    total_posts = len(all_posts)
+    idf = lambda word: math.log(total_posts / (1 + doc_freq[word]))
+
+    def tfidf_vector(term_counts):
+        """Turns {word: TF} into {word: TF * IDF} plus the vector's length, for cosine similarity."""
+        vector = {w: tf * idf(w) for w, tf in term_counts.items()}
+        return vector, math.sqrt(sum(v * v for v in vector.values()))
+
+    # User profile: TF = number of liked posts each word appears in
+    profile_counts = collections.Counter()
+    for p in liked_posts:
+        profile_counts.update(set(tokenize(p['content'])))
+    profile_vector, profile_norm = tfidf_vector(profile_counts)
+
+    # 5. Score each candidate
+    scored_posts = []
+    for post in candidates:
+        score = 0.0
+        if post['user_id'] in followed_ids:
+            score += 2.0
+        if post['user_id'] in liked_author_ids:
+            score += 1.0
+        # Topic similarity: cosine similarity of TF-IDF vectors (0-1), scaled to 0-10
+        # Post vector: TF = number of times each word appears in the post
+        post_vector, post_norm = tfidf_vector(collections.Counter(tokenize(post['content'])))
+        if post_norm > 0 and profile_norm > 0:
+            dot = sum(weight * profile_vector.get(w, 0.0) for w, weight in post_vector.items())
+            score += 10.0 * dot / (post_norm * profile_norm)
+        if score > 0:
+            scored_posts.append((score, post))
+
+    # 6. Take the 5 most relevant (newest first on ties), then show them in reverse-chronological order
+    scored_posts.sort(key=lambda x: (x[0], x[1]['created_at']), reverse=True)
+    top_posts = [post for score, post in scored_posts[:5]]
+    return sorted(top_posts, key=lambda p: p['created_at'], reverse=True)
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)

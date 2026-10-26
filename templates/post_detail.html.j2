@@ -3,6 +3,12 @@
 {% from "macros/user_macros.html.j2" import user_display %}
 
 <div class="col-md-8 mx-auto pt-4">
+  {% if is_newcomer %}
+  <!-- Encourage friendly replies to posts from new members -->
+  <div class="small text-success mb-1 ms-1">
+    🌱 New Member Post • <em>Keep comments friendly and welcoming!</em>
+  </div>
+  {% endif %}
   <div class="card shadow-sm">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center">
@@ -122,6 +128,11 @@
       </div>
       <div class="modal-body">
         <form action="/posts/{{ post.id }}/comment" method="POST">
+          {% if is_newcomer %}
+          <div class="alert alert-success py-2 small">
+            🌱 {{ post.username }} is new here. <em>Keep comments friendly and welcoming!</em>
+          </div>
+          {% endif %}
           <div class="mb-3">
             <label for="comment-content-{{ post.id }}" class="form-label">Your Comment</label>
             <textarea class="form-control" id="comment-content-{{ post.id }}" name="content" rows="3" required></textarea>
