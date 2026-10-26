@@ -39,8 +39,25 @@ def get_db():
             detect_types=sqlite3.PARSE_DECLTYPES
         )
         g.db.row_factory = sqlite3.Row
+        ensure_schema(g.db)
 
     return g.db
+
+
+# Databases whose schema has already been checked during this run
+_checked_databases = set()
+
+
+def ensure_schema(db):
+    """Adds columns that newer features need but older copies of the database don't have yet."""
+    if DATABASE in _checked_databases:
+        return
+    user_columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
+    # Interests the user removed themselves, so they are not detected from their posts again
+    if 'removed_interests' not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN removed_interests TEXT DEFAULT ''")
+        db.commit()
+    _checked_databases.add(DATABASE)
 
 
 @app.teardown_appcontext
@@ -260,6 +277,12 @@ def add_post():
                    (user_id, moderated_content))
         db.commit()
         flash('Your post was successfully created!', 'success')
+
+        # Learn the user's interests from what they post
+        added_interests = update_interests_from_posts(user_id)
+        if added_interests:
+            flash(f'Based on your posts, we added {", ".join(added_interests)} to your interests. '
+                  'You can edit them on your profile.', 'info')
     else:
         # This will catch empty posts or posts that were fully censored
         flash('Post cannot be empty or was fully censored.', 'warning')
@@ -376,6 +399,11 @@ def user_profile(username):
                            is_own_profile=is_own_profile)
     
 
+def split_interests(raw):
+    """Turns a stored 'A, B, C' interests string into a list."""
+    return [i.strip() for i in (raw or '').split(',') if i.strip()]
+
+
 def clean_interests(raw):
     """Turns the comma-separated string from the tag input into 'A, B, C', dropping blanks and case-insensitive duplicates."""
     interests_list = []
@@ -384,6 +412,79 @@ def clean_interests(raw):
         if interest and interest.lower() not in (i.lower() for i in interests_list):
             interests_list.append(interest)
     return ', '.join(interests_list)
+
+
+# Keywords used to recognise each interest in a user's posts
+INTEREST_KEYWORDS = {
+    'AI': {'ai', 'chatgpt', 'gpt', 'llm', 'llms', 'neural', 'chatbot', 'openai', 'claude', 'gemini'},
+    'Python': {'python', 'pip', 'django', 'flask', 'pandas', 'numpy', 'pytest', 'jupyter'},
+    'Tech': {'tech', 'technology', 'computer', 'laptop', 'smartphone', 'phone', 'gadget', 'gadgets', 'software',
+             'hardware', 'programming', 'coding', 'code', 'developer', 'app', 'linux', 'windows', 'gpu', 'cpu'},
+    'Security': {'security', 'cybersecurity', 'hacker', 'hackers', 'hacking', 'malware', 'phishing', 'password',
+                 'passwords', 'encryption', 'vulnerability', 'firewall', 'privacy', 'breach'},
+    'DIY': {'diy', 'handmade', 'crafts', 'craft', 'woodworking', 'build', 'built', 'building', 'drill', 'paint',
+            'painted', 'repair', 'fixed', 'tools', 'renovation', 'workshop'},
+    'Cats': {'cat', 'cats', 'kitten', 'kittens', 'kitty', 'meow', 'purr', 'feline'},
+    'Dogs': {'dog', 'dogs', 'puppy', 'puppies', 'pup', 'woof', 'bark', 'walkies', 'canine'},
+    'Games': {'game', 'games', 'gaming', 'gamer', 'playstation', 'xbox', 'nintendo', 'steam', 'minecraft', 'esports'},
+    'Cars': {'car', 'cars', 'bmw', 'ferrari', 'ford', 'audi', 'tesla', 'engine', 'driving', 'motorsport'},
+    'Sports': {'sport', 'sports', 'football', 'soccer', 'hockey', 'basketball', 'tennis', 'goal'},
+    'Fitness': {'gym', 'workout', 'fitness', 'running', 'exercise', 'training', 'yoga', 'lifting'},
+    'Food': {'food', 'cooking', 'cook', 'recipe', 'baking', 'baked', 'dinner', 'lunch', 'pizza', 'pasta', 'delicious'},
+    'Music': {'music', 'song', 'songs', 'album', 'concert', 'guitar', 'piano', 'band', 'playlist', 'spotify'},
+    'Travel': {'travel', 'travelling', 'traveling', 'trip', 'vacation', 'holiday', 'flight', 'beach', 'hiking', 'abroad'},
+    'Movies': {'movie', 'movies', 'film', 'films', 'cinema', 'netflix', 'trailer'},
+    'Books': {'book', 'books', 'reading', 'novel', 'author', 'library'},
+    'Gardening': {'garden', 'gardening', 'flower', 'flowers', 'plant', 'plants', 'tulip', 'tulips', 'rose',
+                  'roses', 'seeds', 'bloom', 'blooming', 'soil', 'greenhouse', 'vegetables', 'houseplants'},
+    'Nature': {'nature', 'forest', 'woods', 'lake', 'mountain', 'mountains', 'wildlife', 'birds', 'sunset',
+               'outdoors', 'camping', 'river', 'trees'},
+    'Photography': {'photo', 'photos', 'photography', 'camera', 'lens', 'photographer', 'shot', 'shots',
+                    'portrait', 'canon', 'nikon'},
+    'Art': {'art', 'artist', 'drawing', 'sketch', 'painting', 'canvas', 'gallery', 'museum', 'illustration',
+            'sculpture', 'watercolor'},
+    'Fashion': {'fashion', 'outfit', 'outfits', 'clothes', 'dress', 'shoes', 'sneakers', 'style', 'jacket',
+                'streetwear'},
+    'Science': {'science', 'scientist', 'physics', 'chemistry', 'biology', 'space', 'nasa', 'planet',
+                'research', 'experiment', 'astronomy'},
+    'History': {'history', 'historical', 'ancient', 'medieval', 'war', 'empire', 'castle', 'century'},
+}
+
+# How many keyword mentions across a user's posts it takes before an interest is added,
+# so that a single passing word doesn't count as an interest
+INTEREST_MIN_MENTIONS = 2
+
+
+def detect_interests(texts):
+    """Keyword-based interest detection: counts keyword mentions per interest across the texts
+    and returns the interests mentioned at least INTEREST_MIN_MENTIONS times, most mentioned first."""
+    counts = collections.Counter()
+    for text in texts:
+        words = re.findall(r"[a-z0-9]+", (text or '').lower())
+        for interest, keywords in INTEREST_KEYWORDS.items():
+            mentions = sum(1 for word in words if word in keywords)
+            if mentions:
+                counts[interest] += mentions
+    return [interest for interest, n in counts.most_common() if n >= INTEREST_MIN_MENTIONS]
+
+
+def update_interests_from_posts(user_id):
+    """Detects interests from all of the user's posts and adds any new ones to their profile,
+    skipping interests the user has removed themselves. Returns the list of interests that were added."""
+    posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    detected = detect_interests([p['content'] for p in posts])
+
+    user = query_db('SELECT interests, removed_interests FROM users WHERE id = ?', (user_id,), one=True)
+    current = split_interests(user['interests'])
+    skip_lower = {i.lower() for i in current + split_interests(user['removed_interests'])}
+    added = [i for i in detected if i.lower() not in skip_lower]
+
+    if added:
+        db = get_db()
+        db.execute('UPDATE users SET interests = ? WHERE id = ?',
+                   (clean_interests(', '.join(current + added)), user_id))
+        db.commit()
+    return added
 
 
 @app.route('/u/interests', methods=['POST'])
@@ -397,8 +498,17 @@ def update_interests():
         return redirect(url_for('login'))
 
     interests = clean_interests(request.form.get('interests', ''))
+    new_lower = {i.lower() for i in split_interests(interests)}
+
+    # Remember interests the user took off their profile so post-based detection doesn't add them back.
+    # Interests they add again themselves are taken off that list
+    user = query_db('SELECT interests, removed_interests FROM users WHERE id = ?', (user_id,), one=True)
+    removed = [i for i in split_interests(user['removed_interests']) if i.lower() not in new_lower]
+    removed += [i for i in split_interests(user['interests']) if i.lower() not in new_lower]
+
     db = get_db()
-    db.execute('UPDATE users SET interests = ? WHERE id = ?', (interests, user_id))
+    db.execute('UPDATE users SET interests = ?, removed_interests = ? WHERE id = ?',
+               (interests, clean_interests(', '.join(removed)), user_id))
     db.commit()
 
     flash('Your interests were updated.', 'success')
