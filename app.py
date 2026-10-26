@@ -273,8 +273,11 @@ def add_post():
 
     # Pass the user's content through the moderation function (point-of-action feedback, Design Claim 20)
     allowed, category, message = moderation_feedback(content, 'post')
-    if not allowed:
-        flash(message, category)
+
+    # Blocked posts, and flagged posts the user hasn't confirmed yet, are not published.
+    # Instead the user is sent back to the post form with a review popup and their draft restored
+    if not allowed or (category == 'info' and not request.form.get('confirmed')):
+        start_moderation_review(content, 'post', allowed, category, message, url_for('add_post'))
         return redirect(url_for('feed'))
 
     # Store the original text; moderation is applied again whenever posts are displayed,
@@ -283,7 +286,7 @@ def add_post():
     db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
                (user_id, content))
     db.commit()
-    flash(message, category)
+    flash(message if category == 'success' else f'Your post was published. {message}', category)
 
     # Learn the user's interests from what they post
     added_interests = update_interests_from_posts(user_id)
@@ -338,10 +341,58 @@ def moderation_feedback(content, kind):
         return False, 'danger', f'{noun} blocked: it has too many rule violations ({", ".join(issues)}). Please revise it and try again.'
 
     if score > 0:
-        return True, 'info', (f'Your {kind} was published! Friendly reminder: we flagged {", ".join(issues)}. '
+        return True, 'info', (f'We flagged {", ".join(issues)} in your {kind}. '
                               'Links and profanity are automatically filtered according to community guidelines.')
 
     return True, 'success', f'Your {kind} was successfully created!'
+
+
+def start_moderation_review(content, kind, allowed, category, message, action, post_id=None):
+    """
+    Saves a draft that moderation stopped so the next page can show a review popup.
+    The popup lets the user go back to the form with their text restored to edit it,
+    or (for flagged but allowed content) publish it anyway by resubmitting to action.
+    """
+    moderated_content, _ = moderate_content(content)
+    session['moderation_review'] = {
+        'kind': kind,
+        'content': content,
+        'allowed': allowed,
+        'category': category,
+        'message': message,
+        # Show how the text will look after filtering, only when it can still be published
+        'preview': moderated_content if allowed else None,
+        'action': action,
+        'post_id': post_id,
+    }
+
+
+@app.context_processor
+def inject_moderation_review():
+    """
+    Hands the review popup and any draft being edited to the templates.
+    Both are popped so they are only shown on the next page the user sees.
+    """
+    return {
+        'moderation_review': session.pop('moderation_review', None),
+        'moderation_draft': session.pop('moderation_draft', None),
+    }
+
+
+@app.route('/moderation/edit', methods=['POST'])
+def moderation_edit():
+    """'Edit' button of the review popup: takes the user back to the form with their draft filled in."""
+    kind = request.form.get('kind')
+    post_id = request.form.get('post_id', type=int)
+    session['moderation_draft'] = {
+        'kind': kind,
+        'content': request.form.get('content', ''),
+        'post_id': post_id,
+    }
+
+    if kind == 'comment' and post_id:
+        return redirect(url_for('post_detail', post_id=post_id) + '#edit-draft')
+    return redirect(url_for('feed') + '#edit-draft')
     
     
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
@@ -755,14 +806,19 @@ def add_comment(post_id):
 
     # Basic validation to ensure comment is not empty
     if content and content.strip():
-        # Same point-of-action moderation feedback as posts
+        # Same point-of-action moderation feedback as posts: send the user back to the post's
+        # comment form with a review popup instead of publishing
         allowed, category, message = moderation_feedback(content, 'comment')
-        if allowed:
-            db = get_db()
-            db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
-                       (post_id, user_id, content))
-            db.commit()
-        flash(message, category)
+        if not allowed or (category == 'info' and not request.form.get('confirmed')):
+            start_moderation_review(content, 'comment', allowed, category, message,
+                                    url_for('add_comment', post_id=post_id), post_id)
+            return redirect(url_for('post_detail', post_id=post_id))
+
+        db = get_db()
+        db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
+                   (post_id, user_id, content))
+        db.commit()
+        flash(message if category == 'success' else f'Your comment was published. {message}', category)
     else:
         flash('Comment cannot be empty.', 'warning')
 
