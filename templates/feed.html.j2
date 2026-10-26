@@ -28,7 +28,9 @@
       <h5 class="card-title">Create a new post</h5>
       <form action="{{ url_for('add_post') }}" method="POST">
         <div class="mb-3">
-          <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
+          {# A draft sent back from the moderation review popup is filled in and highlighted #}
+          {% set draft = moderation_draft if moderation_draft and moderation_draft.kind == 'post' else None %}
+          <textarea class="form-control{% if draft %} border-warning border-3{% endif %}" {% if draft %}id="edit-draft" autofocus{% endif %} name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required>{{ draft.content if draft }}</textarea>
         </div>
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>

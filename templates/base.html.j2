@@ -99,6 +99,59 @@
     {% endif %}
 {% endwith %}
 
+{# Review popup for a post/comment that moderation stopped, see start_moderation_review in app.py #}
+{# Rendered already open by the server (no JavaScript needed); every button leads to a new page #}
+{% set review = moderation_review %}
+{% if review %}
+<div class="modal show d-block" id="moderationReviewModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="moderationReviewLabel">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content border-{{ 'danger' if not review.allowed else 'warning' }} border-3">
+      <div class="modal-header text-bg-{{ 'danger' if not review.allowed else 'warning' }}">
+        <h5 class="modal-title text-dark" id="moderationReviewLabel">
+          {% if not review.allowed %}&#9940; Your {{ review.kind }} was not published{% else %}&#9888;&#65039; Please review your {{ review.kind }} before publishing{% endif %}
+        </h5>
+      </div>
+      <div class="modal-body">
+        <p class="fs-5">{{ review.message }}</p>
+
+        <h6 class="text-muted mb-1">What you wrote</h6>
+        <div class="border rounded p-2 mb-3 bg-body-tertiary" style="white-space: pre-wrap;">{{ review.content }}</div>
+
+        {% if review.preview is not none %}
+        <h6 class="text-muted mb-1">How others will see it</h6>
+        <div class="border rounded p-2 mb-3" style="white-space: pre-wrap;">{{ review.preview }}</div>
+        {% endif %}
+
+        <p class="mb-0">
+          {% if not review.allowed %}
+            Your text has been kept. Go back to edit it so it follows our <a href="{{ url_for('rules') }}" target="_blank">community rules</a>, then submit it again.
+          {% else %}
+            You can go back and edit it, or publish it as it is with the filtering applied.
+          {% endif %}
+        </p>
+      </div>
+      <div class="modal-footer">
+        <a href="{{ request.path }}" class="btn btn-danger">Discard</a>
+        {% if review.allowed %}
+        <form action="{{ review.action }}" method="POST" class="d-inline">
+          <input type="hidden" name="content" value="{{ review.content }}">
+          <input type="hidden" name="confirmed" value="1">
+          <button type="submit" class="btn btn-warning">Post anyway</button>
+        </form>
+        {% endif %}
+        <form action="{{ url_for('moderation_edit') }}" method="POST" class="d-inline">
+          <input type="hidden" name="content" value="{{ review.content }}">
+          <input type="hidden" name="kind" value="{{ review.kind }}">
+          <input type="hidden" name="post_id" value="{{ review.post_id or '' }}">
+          <button type="submit" class="btn btn-primary">&#9998; Edit my {{ review.kind }}</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-backdrop show"></div>
+{% endif %}
+
     {% block content %}{% endblock %}
   </div>
 </div>
