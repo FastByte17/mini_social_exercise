@@ -22,13 +22,57 @@
 {% endif %}
 
 {% if show_intro_prompt %}
-<!-- Introduction Prompt: shown to users whose account is less than 7 days old and who have not posted yet -->
+<!-- Introduction Prompt (Design Claim 19): a guided introduction form for newcomers who haven't introduced themselves yet -->
 <div class="col-md-8 mx-auto mb-4">
-  <div class="alert alert-success alert-dismissible fade show mb-0" role="alert">
-    <h5 class="alert-heading">🌱 Welcome to the community, {{ session.get('username') }}!</h5>
-    <p class="mb-2">You're new here, so why not introduce yourself? Tell everyone a bit about who you are and what you're interested in.</p>
-    <button type="button" class="btn btn-sm btn-success" id="intro-prompt-btn">Write an introduction</button>
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  <div class="card border-success border-2 shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title text-success">&#127793; Welcome to the community, {{ session.get('username') }}!</h5>
+      <p class="mb-3">Introduce yourself so other members can get to know you. Your introduction is shown to existing members, who are invited to welcome you.</p>
+      <form action="{{ url_for('introduce') }}" method="POST">
+        <div class="row g-2 mb-2">
+          <div class="col-md-6">
+            <label for="intro-location" class="form-label small mb-1">Where are you from?</label>
+            <input type="text" class="form-control" id="intro-location" name="location" value="{{ intro_defaults.location }}" placeholder="e.g. Oulu, Finland">
+          </div>
+          <div class="col-md-6">
+            <label for="intro-interests" class="form-label small mb-1">What are you into?</label>
+            <input type="text" class="form-control" id="intro-interests" name="interests" value="{{ intro_defaults.interests }}" placeholder="e.g. Cats, DIY, Python">
+          </div>
+        </div>
+        <label for="intro-about" class="form-label small mb-1">Tell everyone a little about yourself</label>
+        <textarea class="form-control mb-3" id="intro-about" name="about" rows="2" placeholder="What brings you here? What would you like to talk about?" required>{{ intro_defaults.about }}</textarea>
+        <button type="submit" class="btn btn-success">Post my introduction</button>
+      </form>
+      <form action="{{ url_for('skip_introduction') }}" method="POST" class="d-inline-block mt-2">
+        <button type="submit" class="btn btn-sm btn-secondary me-3">Not now</button>
+        <button type="submit" name="forever" value="1" class="btn btn-sm btn-secondary px-0">Don't ask again</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if welcome_queue %}
+<!-- Welcome New Members (Design Claim 19): recent introductions the current user hasn't replied to yet -->
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card border-success shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title">&#128075; Say hello to new members</h5>
+      <p class="small text-muted">These members just introduced themselves. A quick welcome makes a big difference!</p>
+      {% for intro in welcome_queue %}
+      <div class="border rounded p-2 mb-2">
+        <div class="d-flex justify-content-between">
+          <a href="{{ url_for('post_detail', post_id=intro.id) }}"><strong>{{ intro.username }}</strong></a>
+          <small class="text-muted">{% if intro.welcome_count == 0 %}No welcomes yet{% else %}{{ intro.welcome_count }} welcome{{ 's' if intro.welcome_count != 1 }} so far{% endif %}</small>
+        </div>
+        <p class="small mb-2">{{ intro.content|truncate(160, True, '...') }}</p>
+        <form action="{{ url_for('add_comment', post_id=intro.id) }}" method="POST" class="d-flex gap-2">
+          <input type="text" class="form-control form-control-sm" name="content" value="{{ intro.suggestion }}" aria-label="Welcome message for {{ intro.username }}" required>
+          <button type="submit" class="btn btn-sm btn-success text-nowrap">Welcome them</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
   </div>
 </div>
 {% endif %}
@@ -95,6 +139,9 @@
           {% else %}
           <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
           {% endif %}
+          {% if entry.post.is_introduction %}
+          <span class="badge bg-info text-dark align-middle fs-6 fw-normal">&#128075; Introduction</span>
+          {% endif %}
           {% if entry.is_newcomer %}
           <span class="badge bg-success align-middle fs-6 fw-normal" title="Joined {% if entry.account_age_days == 0 %}today{% elif entry.account_age_days == 1 %}1 day ago{% else %}{{ entry.account_age_days }} days ago{% endif %}">🌱 New member</span>
           {% endif %}
@@ -116,6 +163,9 @@
       </div>
       
       <p class="mt-2">{{ entry.post.content }}</p>
+      {% if entry.post.is_introduction %}
+      <p class="small text-success mb-2">&#128075; {% if entry.post.welcome_count == 0 %}Be the first to welcome {{ entry.post.username }}!{% else %}Welcomed by {{ entry.post.welcome_count }} member{{ 's' if entry.post.welcome_count != 1 }}{% endif %}</p>
+      {% endif %}
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -240,19 +290,4 @@
     </a>
   </div>
 
-{% if show_intro_prompt %}
-<script>
-  // Introduction Prompt: start an introduction post in the "Create a new post" box
-  document.getElementById('intro-prompt-btn').addEventListener('click', function () {
-    const box = document.getElementById('new-post-content');
-    // Don't overwrite something the user has already started typing
-    if (!box.value.trim()) {
-      box.value = "Hi everyone! I'm new here. A little about me: ";
-    }
-    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    box.focus();
-    box.setSelectionRange(box.value.length, box.value.length);
-  });
-</script>
-{% endif %}
 {% endblock %}

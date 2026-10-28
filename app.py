@@ -58,6 +58,17 @@ def ensure_schema(db):
     if 'removed_interests' not in user_columns:
         db.execute("ALTER TABLE users ADD COLUMN removed_interests TEXT DEFAULT ''")
         db.commit()
+    # Newcomers who chose "Don't ask again" on the introduction prompt
+    if 'intro_skipped' not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN intro_skipped INTEGER DEFAULT 0")
+        db.commit()
+    post_columns = {row['name'] for row in db.execute('PRAGMA table_info(posts)')}
+    # Marks introduction posts, so existing members can be invited to welcome their authors
+    if 'is_introduction' not in post_columns:
+        db.execute("ALTER TABLE posts ADD COLUMN is_introduction INTEGER DEFAULT 0")
+        # Introductions written with the earlier version of the prompt
+        db.execute("UPDATE posts SET is_introduction = 1 WHERE content LIKE 'Hi everyone! I''m new here%'")
+        db.commit()
     _checked_databases.add(DATABASE)
 
 
@@ -123,6 +134,25 @@ def get_account_age_days(user_id):
         created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
     # SQLite's CURRENT_TIMESTAMP is in UTC, so compare against UTC
     return (datetime.utcnow() - created_at).days
+
+
+# Accounts younger than this many days count as newcomers
+NEWCOMER_DAYS = 7
+# Introductions from this many days back are shown to existing members to welcome
+WELCOME_WINDOW_DAYS = 14
+
+
+def is_newcomer_age(account_age_days):
+    return account_age_days is not None and account_age_days < NEWCOMER_DAYS
+
+
+def welcome_suggestion(intro_author, intro_interests, current_user_interests):
+    """Suggested welcome comment for an introduction, mentioning an interest both users share if there is one."""
+    current_lower = {i.lower() for i in split_interests(current_user_interests)}
+    shared = [i for i in split_interests(intro_interests) if i.lower() in current_lower]
+    if shared:
+        return f"Welcome to the community, {intro_author}! I'm into {shared[0]} too, looking forward to your posts about it."
+    return f"Welcome to the community, {intro_author}! Glad to have you here, feel free to ask if you have any questions."
 
 
 @app.route('/')
@@ -228,9 +258,14 @@ def feed():
             comment_dict['content'], _ = moderate_content(comment_dict['content'])
             comments_moderated.append(comment_dict)
 
-        # Check if the post author is a newcomer (account less than 7 days old)
+        # Check if the post author is a newcomer (account less than NEWCOMER_DAYS old)
         account_age_days = get_account_age_days(post['user_id'])
-        is_newcomer = account_age_days is not None and account_age_days < 7
+        is_newcomer = is_newcomer_age(account_age_days)
+
+        # Introductions show how many other members have welcomed their author
+        intro = query_db('SELECT is_introduction FROM posts WHERE id = ?', (post['id'],), one=True)
+        post_dict['is_introduction'] = bool(intro and intro['is_introduction'])
+        post_dict['welcome_count'] = len({c['user_id'] for c in comments_raw if c['user_id'] != post['user_id']})
 
         posts_data.append({
             'post': post_dict,
@@ -259,16 +294,44 @@ def feed():
         
         weekly_progress = posts_count + comments_count
 
-    # Check if the logged-in user is a newcomer, to drive the Introduction Prompt
+    # Introduction Prompt (Design Claim 19): newcomers who haven't introduced themselves yet get a guided
+    # introduction form, unless they chose "Don't ask again", or "Not now" during this visit
     is_current_user_newcomer = False
     show_intro_prompt = False
+    intro_defaults = {}
+    welcome_queue = []
     if current_user_id:
-        current_user_age_days = get_account_age_days(current_user_id)
-        is_current_user_newcomer = current_user_age_days is not None and current_user_age_days < 7
-        # Only prompt newcomers who haven't made their first post yet
-        if is_current_user_newcomer:
-            has_posted = query_db('SELECT 1 FROM posts WHERE user_id = ? LIMIT 1', (current_user_id,), one=True)
-            show_intro_prompt = not has_posted
+        current_user = query_db('SELECT username, location, interests, intro_skipped FROM users WHERE id = ?',
+                                (current_user_id,), one=True)
+        is_current_user_newcomer = is_newcomer_age(get_account_age_days(current_user_id))
+        if is_current_user_newcomer and not current_user['intro_skipped'] and not session.get('intro_snoozed'):
+            has_introduced = query_db('SELECT 1 FROM posts WHERE user_id = ? AND is_introduction = 1 LIMIT 1',
+                                      (current_user_id,), one=True)
+            show_intro_prompt = not has_introduced
+            # Pre-fill the form from the profile, or with what the user typed if their introduction was blocked
+            intro_defaults = session.pop('intro_form', None) or {
+                'location': current_user['location'] or '',
+                'interests': current_user['interests'] or '',
+                'about': '',
+            }
+
+        # Welcome New Members: recent introductions this user hasn't replied to yet,
+        # the ones with the fewest welcomes first so no newcomer is left without a reply
+        intros = query_db(f'''
+            SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id, u.interests,
+                   (SELECT COUNT(DISTINCT c.user_id) FROM comments c
+                    WHERE c.post_id = p.id AND c.user_id != p.user_id) AS welcome_count
+            FROM posts p JOIN users u ON p.user_id = u.id
+            WHERE p.is_introduction = 1 AND p.user_id != ?
+              AND p.created_at >= datetime('now', '-{WELCOME_WINDOW_DAYS} days')
+              AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.post_id = p.id AND c.user_id = ?)
+            ORDER BY welcome_count ASC, p.created_at DESC
+            LIMIT 3''', (current_user_id, current_user_id))
+        for intro in intros:
+            intro = dict(intro)
+            intro['content'], _ = moderate_content(intro['content'])
+            intro['suggestion'] = welcome_suggestion(intro['username'], intro['interests'], current_user['interests'])
+            welcome_queue.append(intro)
 
     #  4. Render Template with Pagination Info
     return render_template('feed.html.j2', 
@@ -282,8 +345,69 @@ def feed():
                            weekly_progress=weekly_progress, # Pass the user's weekly progress
                            weekly_goal=weekly_goal, # Pass the user's weekly goal
                            is_current_user_newcomer=is_current_user_newcomer, # Account is less than 7 days old
-                           show_intro_prompt=show_intro_prompt # Newcomer who hasn't posted yet: show the Introduction Prompt
+                           show_intro_prompt=show_intro_prompt, # Newcomer who hasn't introduced themselves yet
+                           intro_defaults=intro_defaults, # Pre-filled answers for the introduction form
+                           welcome_queue=welcome_queue # Introductions the current user can welcome
                            )
+
+
+@app.route('/introduce', methods=['POST'])
+def introduce():
+    """Introduction Prompt (Design Claim 19): builds an introduction post from the guided form."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to introduce yourself.', 'danger')
+        return redirect(url_for('login'))
+
+    form = {field: request.form.get(field, '').strip() for field in ('location', 'interests', 'about')}
+    if not form['about']:
+        flash('Please tell everyone a little about yourself before posting your introduction.', 'warning')
+        session['intro_form'] = form
+        return redirect(url_for('feed'))
+
+    content = f"Hi everyone! I'm new here, my name is {session.get('username')}."
+    if form['location']:
+        content += f" I'm from {form['location']}."
+    if form['interests']:
+        content += f" I'm into {form['interests']}."
+    content += f" {form['about']}"
+
+    # Introductions go through the same moderation as every other post
+    allowed, category, message = moderation_feedback(content, 'introduction')
+    if not allowed:
+        flash(message + ' Please edit your introduction and try again.', category)
+        session['intro_form'] = form
+        return redirect(url_for('feed'))
+
+    db = get_db()
+    db.execute('INSERT INTO posts (user_id, content, is_introduction) VALUES (?, ?, 1)', (user_id, content))
+    db.commit()
+    flash('Your introduction is posted! Other members will be invited to welcome you.', 'success')
+    if category == 'info':
+        flash(message, category)
+
+    added_interests = update_interests_from_posts(user_id)
+    if added_interests:
+        flash(f'Based on your posts, we added {", ".join(added_interests)} to your interests. '
+              'You can edit them on your profile.', 'info')
+    return redirect(url_for('feed'))
+
+
+@app.route('/introduce/skip', methods=['POST'])
+def skip_introduction():
+    """Hides the Introduction Prompt: "Not now" for this visit, "Don't ask again" for good."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+
+    if request.form.get('forever'):
+        db = get_db()
+        db.execute('UPDATE users SET intro_skipped = 1 WHERE id = ?', (user_id,))
+        db.commit()
+        flash("Okay, we won't ask again. You can still write a normal post to say hello any time.", 'info')
+    else:
+        session['intro_snoozed'] = True
+    return redirect(url_for('feed'))
     
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -350,6 +474,24 @@ def moderation_issues(content, moderated_content, score):
         issues.append('mild profanity')
 
     return issues
+
+
+# Wording that is not against the rules but easily comes across as dismissive to a newcomer
+HARSH_PHRASES = [
+    'noob', 'n00b', 'newb', 'newbie', 'stupid', 'dumb', 'idiot', 'clueless', 'pathetic', 'useless', 'loser',
+    'cringe', 'google it', 'read the rules', 'rtfm', 'lurk more', 'nobody cares', 'who asked', 'shut up',
+    'go away', 'learn to', 'did you even', 'what a joke',
+]
+
+
+def find_harsh_words(content):
+    """Returns the harsh phrases and mild profanity found in the content, for the newcomer kindness check."""
+    found = []
+    for phrase in HARSH_PHRASES + TIER3_WORDS:
+        match = re.search(r'\b' + re.escape(phrase) + r'\b', content, re.IGNORECASE)
+        if match and match.group(0).lower() not in (f.lower() for f in found):
+            found.append(match.group(0))
+    return found
 
 
 def moderation_feedback(content, kind):
@@ -525,7 +667,7 @@ def user_profile(username):
 
     # Check if the profile owner is a newcomer (account less than 7 days old)
     account_age_days = get_account_age_days(user['id'])
-    is_newcomer = account_age_days is not None and account_age_days < 7
+    is_newcomer = is_newcomer_age(account_age_days)
 
     return render_template('user_profile.html.j2',
                            user=user, 
@@ -726,7 +868,7 @@ def post_detail(post_id):
 
     # Check if the post author is a newcomer (account less than 7 days old)
     account_age_days = get_account_age_days(post['user_id'])
-    is_newcomer = account_age_days is not None and account_age_days < 7
+    is_newcomer = is_newcomer_age(account_age_days)
 
     # Pass the moderated data to the template
     return render_template('post_detail.html.j2',
@@ -851,7 +993,31 @@ def add_comment(post_id):
         # Same point-of-action moderation feedback as posts: send the user back to the post's
         # comment form with a review popup instead of publishing
         allowed, category, message = moderation_feedback(content, 'comment')
-        if not allowed or (category == 'info' and not request.form.get('confirmed')):
+        confirmed = request.form.get('confirmed')
+        if not allowed:
+            start_moderation_review(content, 'comment', allowed, category, message,
+                                    url_for('add_comment', post_id=post_id), post_id)
+            return redirect(url_for('post_detail', post_id=post_id))
+
+        post = query_db('SELECT p.user_id, p.is_introduction, u.username FROM posts p '
+                        'JOIN users u ON p.user_id = u.id WHERE p.id = ?', (post_id,), one=True)
+        author_age_days = get_account_age_days(post['user_id']) if post else None
+        to_newcomer = post and post['user_id'] != user_id and is_newcomer_age(author_age_days)
+
+        # Kindness check (Design Claim 21): harsh wording aimed at a newcomer is held back
+        # and the commenter is asked to rephrase it before it is published
+        harsh_words = find_harsh_words(content) if to_newcomer else []
+        if harsh_words and not confirmed:
+            joined = {0: 'today', 1: 'yesterday'}.get(author_age_days, f'{author_age_days} days ago')
+            quoted = ', '.join(f'"{w}"' for w in harsh_words)
+            newcomer_message = (f"{post['username']} joined {joined} and is still finding their way around. "
+                                f'Your comment includes {quoted}, which can feel harsh to someone new. '
+                                'Could you rephrase it in a friendlier way?')
+            start_moderation_review(content, 'comment', True, 'newcomer', newcomer_message,
+                                    url_for('add_comment', post_id=post_id), post_id)
+            return redirect(url_for('post_detail', post_id=post_id))
+
+        if category == 'info' and not confirmed:
             start_moderation_review(content, 'comment', allowed, category, message,
                                     url_for('add_comment', post_id=post_id), post_id)
             return redirect(url_for('post_detail', post_id=post_id))
@@ -860,7 +1026,10 @@ def add_comment(post_id):
         db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                    (post_id, user_id, content))
         db.commit()
-        flash(message if category == 'success' else f'Your comment was published. {message}', category)
+        if post and post['is_introduction'] and post['user_id'] != user_id:
+            flash(f"Thanks for welcoming {post['username']}! \U0001F331", 'success')
+        else:
+            flash(message if category == 'success' else f'Your comment was published. {message}', category)
     else:
         flash('Comment cannot be empty.', 'warning')
 
@@ -1428,9 +1597,20 @@ def recommend(user_id, filter_following):
         if score > 0:
             scored_posts.append((score, post))
 
-    # 6. Take the 5 most relevant (newest first on ties), then show them in reverse-chronological order
+    # 6. Take the 5 most relevant (newest first on ties), then show them in reverse-chronological order.
+    # Copies of a post the user already liked, or of a post already picked, are skipped: reposted
+    # text would otherwise match the profile almost perfectly and fill the whole list
     scored_posts.sort(key=lambda x: (x[0], x[1]['created_at']), reverse=True)
-    top_posts = [post for score, post in scored_posts[:5]]
+    seen_texts = {tuple(tokenize(p['content'])) for p in liked_posts}
+    top_posts = []
+    for score, post in scored_posts:
+        text = tuple(tokenize(post['content']))
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        top_posts.append(post)
+        if len(top_posts) == 5:
+            break
     return sorted(top_posts, key=lambda p: p['created_at'], reverse=True)
 
 

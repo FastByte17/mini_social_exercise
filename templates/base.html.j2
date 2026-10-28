@@ -103,12 +103,14 @@
 {# Rendered already open by the server (no JavaScript needed); every button leads to a new page #}
 {% set review = moderation_review %}
 {% if review %}
+{# Red when blocked, green for the newcomer kindness check (Design Claim 21), yellow when flagged #}
+{% set review_color = 'danger' if not review.allowed else ('success' if review.category == 'newcomer' else 'warning') %}
 <div class="modal show d-block" id="moderationReviewModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="moderationReviewLabel">
   <div class="modal-dialog modal-dialog-centered modal-lg">
-    <div class="modal-content border-{{ 'danger' if not review.allowed else 'warning' }} border-3">
-      <div class="modal-header text-bg-{{ 'danger' if not review.allowed else 'warning' }}">
+    <div class="modal-content border-{{ review_color }} border-3">
+      <div class="modal-header text-bg-{{ review_color }}">
         <h5 class="modal-title text-dark" id="moderationReviewLabel">
-          {% if not review.allowed %}&#9940; Your {{ review.kind }} was not published{% else %}&#9888;&#65039; Please review your {{ review.kind }} before publishing{% endif %}
+          {% if not review.allowed %}&#9940; Your {{ review.kind }} was not published{% elif review.category == 'newcomer' %}&#127793; Be kind to new members{% else %}&#9888;&#65039; Please review your {{ review.kind }} before publishing{% endif %}
         </h5>
       </div>
       <div class="modal-body">
@@ -125,6 +127,13 @@
         <p class="mb-0">
           {% if not review.allowed %}
             Your text has been kept. Go back to edit it so it follows our <a href="{{ url_for('rules') }}" target="_blank">community rules</a>, then submit it again.
+          {% elif review.category == 'newcomer' %}
+            Everyone makes mistakes when they're new. A few ideas for a friendlier reply:
+            <ul class="mt-2 mb-0">
+              <li>Explain what you mean instead of only pointing out what's wrong.</li>
+              <li>If they missed a rule, link it kindly: "Just so you know, ..."</li>
+              <li>Start with something welcoming, like "Welcome! ..."</li>
+            </ul>
           {% else %}
             You can go back and edit it, or publish it as it is with the filtering applied.
           {% endif %}
